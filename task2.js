@@ -1,73 +1,111 @@
-// утиліта для асинхронної обробки масиву з підтримкою тайм-ауту та паралелізму
-async function mapAsyncWithTimeoutAndParallelism(
-	array, // масив елементів для обробки
-	asyncCallback, // асинхронна функція, яка обробляє кожен елемент
-	timeout = 3000, // максимальний час (у мс) для виконання одного завдання
-	parallelism = 2 // кількість паралельних оброблювачів
-) {
-	const results = []; // масив для збереження результатів
-	const processingQueue = [...array]; // копія масиву для обробки у вигляді черги
+const EventEmitter = require('events');
 
-	// функція, яка обробляє елементи по черзі
-	async function processNext() {
-		while (processingQueue.length > 0) {
-			const item = processingQueue.shift(); // взяти наступний елемент з черги
+class AsyncProcessor extends EventEmitter {
+	constructor(array, asyncTask, timeout = 3000, parallelism = 2) {
+		super();
+		this.array = [...array];
+		this.asyncTask = asyncTask;
+		this.timeout = timeout;
+		this.parallelism = parallelism;
+		this.results = [];
+		this.processingQueue = [...array];
+		this.activeWorkers = 0;
+	}
 
-			// виконуємо функцію з тайм-аутом
-			const result = await Promise.race([
-				asyncCallback(item), // виклик асинхронної функції
-				new Promise(
-					(_, reject) => setTimeout(() => reject(new Error('Timeout')), timeout) // тайм-аут для завдання
-				),
-			]).catch((err) => {
-				if (err.message === 'Timeout') {
-					console.warn(`пропуск елемента через тайм-аут: ${item}`);
-				}
-				return null; // значення за замовчуванням для пропущених завдань
-			});
-
-			results.push(result); // зберегти результат
+	start() {
+		// запускаємо потрібну кількість обробників
+		for (let i = 0; i < this.parallelism; i++) {
+			this.startWorker();
 		}
 	}
 
-	// створюємо робітників для обробки елементів паралельно
-	const workers = Array(parallelism).fill(null).map(processNext);
-	await Promise.all(workers); // чекаємо завершення всіх робітників
+	startWorker() {
+		if (this.processingQueue.length === 0) {
+			this.activeWorkers--;
+			if (this.activeWorkers === 0) {
+				this.emit('complete', this.results);
+			}
+			return;
+		}
 
-	return results; // повертаємо масив результатів
+		this.activeWorkers++;
+		const item = this.processingQueue.shift();
+		let isCompleted = false;
+
+		// встановлюємо таймер для відстеження тайм-ауту
+		const timeoutId = setTimeout(() => {
+			if (!isCompleted) {
+				isCompleted = true;
+				console.warn(`пропуск елемента через тайм-аут: ${item}`);
+				this.results.push(null);
+				this.startWorker();
+			}
+		}, this.timeout);
+
+		// запускаємо асинхронне завдання
+		this.executeTask(item, timeoutId, isCompleted);
+	}
+
+	executeTask(item, timeoutId, isCompleted) {
+		let timer = setTimeout(() => {
+			if (!isCompleted) {
+				isCompleted = true;
+				const result = `оброблено: ${item}`;
+				clearTimeout(timeoutId);
+				this.results.push(result);
+				this.startWorker();
+			}
+		}, item * 1000);
+
+		console.log(`обробка елемента: ${item}`);
+	}
 }
 
-// приклад асинхронного завдання
-async function asyncTask(item) {
-	console.log(`обробка елемента: ${item}`);
-	const delay = item * 1000; // симуляція часу виконання
-	await new Promise((resolve) => setTimeout(resolve, delay)); // затримка
-	return `оброблено: ${item}`; // результат виконання
+// функція для створення процесора
+function mapAsyncWithTimeoutAndParallelism(array, asyncTask, timeout, parallelism) {
+	const processor = new AsyncProcessor(array, asyncTask, timeout, parallelism);
+
+	return new Promise((resolve) => {
+		processor.on('complete', (results) => {
+			resolve(results);
+		});
+
+		processor.start();
+	});
 }
 
-// приклад використання: послідовна обробка
-async function sequentialExample() {
+// приклад асинхронного завдання (тепер використовує події)
+function asyncTask(item) {
+	const emitter = new EventEmitter();
+	setTimeout(() => {
+		emitter.emit('complete', `оброблено: ${item}`);
+	}, item * 1000);
+	return emitter;
+}
+
+// приклад послідовної обробки
+function sequentialExample() {
 	console.log('\n--- приклад послідовної обробки ---');
-	const input = [1, 2, 5, 0.5]; // кожен елемент представляє затримку в секундах
-	const timeout = 3000; // тайм-аут 3 секунди
+	const input = [1, 2, 5, 0.5];
+	const timeout = 3000;
 
-	const results = await mapAsyncWithTimeoutAndParallelism(input, asyncTask, timeout, 1); // паралелізм = 1 (послідовна обробка)
-	console.log('результати:', results);
+	mapAsyncWithTimeoutAndParallelism(input, asyncTask, timeout, 1).then((results) => {
+		console.log('результати:', results);
+	});
 }
 
-// приклад використання: паралельна обробка
-async function parallelExample() {
+// приклад паралельної обробки
+function parallelExample() {
 	console.log('\n--- приклад паралельної обробки ---');
-	const input = [1, 2, 5, 0.5]; // кожен елемент представляє затримку в секундах
-	const timeout = 3000; // тайм-аут 3 секунди
-	const parallelism = 2; // кількість паралельних оброблювачів
+	const input = [1, 2, 5, 0.5];
+	const timeout = 3000;
+	const parallelism = 2;
 
-	const results = await mapAsyncWithTimeoutAndParallelism(input, asyncTask, timeout, parallelism);
-	console.log('результати:', results);
+	mapAsyncWithTimeoutAndParallelism(input, asyncTask, timeout, parallelism).then((results) => {
+		console.log('результати:', results);
+	});
 }
 
 // виконання прикладів
-(async () => {
-	await sequentialExample(); // виклик послідовного прикладу
-	await parallelExample(); // виклик паралельного прикладу
-})();
+sequentialExample();
+setTimeout(parallelExample, 6000); // запускаємо другий приклад через 6 секунд

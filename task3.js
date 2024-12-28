@@ -1,57 +1,94 @@
-// утиліта для асинхронної обробки масиву з підтримкою тайм-ауту через AbortController
-async function mapAsyncWithAbortController(array, asyncCallback, timeout = 3000) {
-	const results = []; // масив для збереження результатів
+const EventEmitter = require('events');
 
-	for (const item of array) {
-		// створюємо AbortController для управління тайм-аутом
+class AsyncMapProcessor extends EventEmitter {
+	constructor(array, timeout = 3000) {
+		super();
+		this.array = [...array];
+		this.timeout = timeout;
+		this.results = [];
+		this.currentIndex = 0;
+	}
+
+	// основний метод для обробки елементів
+	process() {
+		if (this.currentIndex >= this.array.length) {
+			this.emit('complete', this.results);
+			return;
+		}
+
+		const item = this.array[this.currentIndex];
 		const controller = new AbortController();
 		const signal = controller.signal;
 
 		// запускаємо таймер для скасування
-		const timeoutId = setTimeout(() => controller.abort(), timeout);
+		const timeoutId = setTimeout(() => {
+			controller.abort();
+		}, this.timeout);
 
-		try {
-			// передаємо signal для підтримки скасування у колбеку
-			const result = await asyncCallback(item, signal);
-			results.push(result); // зберігаємо результат у масив
-		} catch (err) {
+		// створюємо нову подію для завдання
+		const taskEmitter = this.executeTask(item, signal);
+
+		taskEmitter.on('success', (result) => {
+			clearTimeout(timeoutId);
+			this.results.push(result);
+			this.currentIndex++;
+			this.process();
+		});
+
+		taskEmitter.on('error', (error) => {
+			clearTimeout(timeoutId);
 			if (signal.aborted) {
 				console.warn(`пропуск елемента через тайм-аут: ${item}`);
-				results.push(null); // зберігаємо null для пропущених завдань
 			} else {
-				console.error(`помилка обробки елемента ${item}:`, err);
-				results.push(null); // обробка помилки
+				console.error(`помилка обробки елемента ${item}:`, error);
 			}
-		} finally {
-			clearTimeout(timeoutId); // очищаємо таймер
-		}
+			this.results.push(null);
+			this.currentIndex++;
+			this.process();
+		});
+
+		signal.addEventListener('abort', () => {
+			taskEmitter.emit('error', new Error('абортивано'));
+		});
 	}
 
-	return results; // повертаємо масив результатів
-}
+	// виконання окремого завдання
+	executeTask(item, signal) {
+		const taskEmitter = new EventEmitter();
+		console.log(`обробка елемента ${item}`);
 
-// приклад асинхронного завдання
-async function asyncTask(item, signal) {
-	console.log(`обробка елемента ${item}`);
-	const delay = item * 1000; // симуляція часу виконання
+		const delay = item * 1000;
+		const timeoutId = setTimeout(() => {
+			if (!signal.aborted) {
+				taskEmitter.emit('success', `оброблено: ${item}`);
+			}
+		}, delay);
 
-	// враховуємо signal для перевірки скасування
-	await new Promise((resolve, reject) => {
-		const timeoutId = setTimeout(() => resolve(), delay);
 		signal.addEventListener('abort', () => {
 			clearTimeout(timeoutId);
-			reject(new Error('абортивано'));
+			taskEmitter.emit('error', new Error('абортивано'));
 		});
-	});
 
-	return `оброблено: ${item}`; // повертаємо результат
+		return taskEmitter;
+	}
+}
+
+// функція-обгортка для зручного використання
+function mapAsyncWithAbortController(array, timeout) {
+	return new Promise((resolve) => {
+		const processor = new AsyncMapProcessor(array, timeout);
+		processor.on('complete', (results) => {
+			resolve(results);
+		});
+		processor.process();
+	});
 }
 
 // приклад використання
-(async () => {
-	console.log('\n--- приклад використання AbortController ---');
-	const input = [1, 2, 5, 0.5]; // кожен елемент відповідає затримці у секундах
-	const timeout = 3000; // тайм-аут для кожного завдання
-	const output = await mapAsyncWithAbortController(input, asyncTask, timeout);
-	console.log('результати:', output); // пропущені завдання будуть null
-})();
+console.log('\n--- приклад використання ---');
+const input = [1, 2, 5, 0.5];
+const timeout = 3000;
+
+mapAsyncWithAbortController(input, timeout).then((output) => {
+	console.log('результати:', output);
+});
