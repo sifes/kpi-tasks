@@ -1,54 +1,40 @@
-// отже, сенс функції полягає в тому, що ми можемо передати максимальний ліміт часу, за який якась асинхронна операція може виконатися. якщо ж вона за цей час не виконалася - ми пропускаємо її і переходимо до наступної. таким чином ми можемо обробити масив елементів, які можуть виконуватися різний час, і відфільтрувати ті, які виконуються довше, ніж ми хочемо.
+function filterAsync(array, asyncPredicate, callback) {
+	const results = [];
+	let pending = array.length;
 
-function mapAsyncWithLimit(array, asyncCallback, timeout = 3000) {
-	let results = [];
-	let currentIndex = 0;
-
-	function processNext() {
-		if (currentIndex >= array.length) {
-			console.log('результати:', results);
-			return;
-		}
-
-		const item = array[currentIndex];
-		let isCompleted = false;
-		let timeoutId = null;
-
-		// встановлюємо таймер для відстеження тайм-ауту
-		timeoutId = setTimeout(() => {
-			if (!isCompleted) {
-				isCompleted = true;
-				console.warn(`пропуск елемента: ${item} через затримку`);
-				results.push(null);
-				currentIndex++;
-				processNext();
-			}
-		}, timeout);
-
-		// викликаємо асинхронну функцію з колбеком
-		asyncCallback(item, (result) => {
-			if (!isCompleted) {
-				isCompleted = true;
-				clearTimeout(timeoutId);
-				results.push(result);
-				currentIndex++;
-				processNext();
-			}
-		});
+	if (pending === 0) {
+		callback(results);
+		return;
 	}
 
-	processNext();
+	array.forEach((item, index) => {
+		// викликаємо асинхронну умову
+		asyncPredicate(item, index, array, (pass) => {
+			if (pass) {
+				results.push(item); // додаємо елемент, якщо умова виконана
+			}
+			pending--;
+
+			// якщо всі елементи оброблені, викликаємо основний callback
+			if (pending === 0) {
+				callback(results);
+			}
+		});
+	});
 }
 
-function asyncTask(item, callback) {
-	console.log(`обробка елемента ${item}`);
-	const delay = item * 1000;
-
+// приклад асинхронної умови
+function isEvenAsync(num, index, array, cb) {
 	setTimeout(() => {
-		callback(item * 2);
-	}, delay);
+		cb(num % 2 === 0); // перевірка на парність
+	}, 1000);
 }
 
-const input = [1, 2, 5, 0.5];
-const timeout = 3000;
-mapAsyncWithLimit(input, asyncTask, timeout);
+// приклади використання
+console.log('\n--- filterAsync Demo ---');
+const array = [1, 2, 3, 4, 5, 6];
+
+// виконуємо фільтрацію
+filterAsync(array, isEvenAsync, (filtered) => {
+	console.log('результати:', filtered); // [2, 4, 6]
+});

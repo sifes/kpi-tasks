@@ -1,111 +1,81 @@
-const EventEmitter = require('events');
+// функція filterAsync: базова реалізація асинхронного фільтру
+async function filterAsync(array, asyncPredicate) {
+	// створюємо проміси для кожного елемента та чекаємо на їх виконання
+	const results = await Promise.all(
+		array.map(async (item, index) => ({
+			index,
+			item,
+			pass: await asyncPredicate(item, index, array), // перевіряємо умову
+		}))
+	);
 
-class AsyncProcessor extends EventEmitter {
-	constructor(array, asyncTask, timeout = 3000, parallelism = 2) {
-		super();
-		this.array = [...array];
-		this.asyncTask = asyncTask;
-		this.timeout = timeout;
-		this.parallelism = parallelism;
-		this.results = [];
-		this.processingQueue = [...array];
-		this.activeWorkers = 0;
-	}
+	// фільтруємо ті елементи, що відповідають умові
+	return results.filter((result) => result.pass).map((result) => result.item);
+}
 
-	start() {
-		// запускаємо потрібну кількість обробників
-		for (let i = 0; i < this.parallelism; i++) {
-			this.startWorker();
+// функція filterAsyncWithParallelism: асинхронний фільтр із обмеженням паралельності
+async function filterAsyncWithParallelism(array, asyncPredicate, parallelism = 2) {
+	// ініціалізуємо результати та чергу
+	const results = new Array(array.length);
+	const promises = [];
+	let activeWorkers = 0;
+
+	// функція для обробки одного елемента
+	async function processItem(index) {
+		if (index >= array.length) return; // виходимо, якщо індекс за межами масиву
+
+		activeWorkers++; // збільшуємо кількість активних обробників
+		try {
+			// виконуємо асинхронну перевірку умови
+			results[index] = (await asyncPredicate(array[index], index, array)) ? array[index] : null;
+		} catch (error) {
+			results[index] = null; // обробляємо помилки
+		}
+		activeWorkers--; // зменшуємо кількість активних обробників
+
+		// запускаємо наступний елемент із черги, якщо є вільні обробники
+		if (activeWorkers < parallelism && promises.length > 0) {
+			const nextIndex = promises.shift();
+			await processItem(nextIndex);
 		}
 	}
 
-	startWorker() {
-		if (this.processingQueue.length === 0) {
-			this.activeWorkers--;
-			if (this.activeWorkers === 0) {
-				this.emit('complete', this.results);
-			}
-			return;
+	// проходимо по всіх елементах масиву
+	for (let i = 0; i < array.length; i++) {
+		if (activeWorkers < parallelism) {
+			// запускаємо одразу, якщо є вільні обробники
+			await processItem(i);
+		} else {
+			// додаємо в чергу, якщо всі обробники зайняті
+			promises.push(i);
 		}
-
-		this.activeWorkers++;
-		const item = this.processingQueue.shift();
-		let isCompleted = false;
-
-		// встановлюємо таймер для відстеження тайм-ауту
-		const timeoutId = setTimeout(() => {
-			if (!isCompleted) {
-				isCompleted = true;
-				console.warn(`пропуск елемента через тайм-аут: ${item}`);
-				this.results.push(null);
-				this.startWorker();
-			}
-		}, this.timeout);
-
-		// запускаємо асинхронне завдання
-		this.executeTask(item, timeoutId, isCompleted);
 	}
 
-	executeTask(item, timeoutId, isCompleted) {
-		let timer = setTimeout(() => {
-			if (!isCompleted) {
-				isCompleted = true;
-				const result = `оброблено: ${item}`;
-				clearTimeout(timeoutId);
-				this.results.push(result);
-				this.startWorker();
-			}
-		}, item * 1000);
+	// фільтруємо результати, залишаючи лише не null значення
+	return results.filter((item) => item !== null);
+}
 
-		console.log(`обробка елемента: ${item}`);
+// приклади використання
+(async () => {
+	// вхідний масив
+	const array = [1, 2, 3, 4, 5, 6];
+
+	// приклад 1: базова filterAsync
+	async function isEven(num) {
+		return num % 2 === 0; // перевірка на парність
 	}
-}
 
-// функція для створення процесора
-function mapAsyncWithTimeoutAndParallelism(array, asyncTask, timeout, parallelism) {
-	const processor = new AsyncProcessor(array, asyncTask, timeout, parallelism);
+	console.log('\n--- базова filterAsync ---');
+	const filtered = await filterAsync(array, isEven);
+	console.log('фільтровані парні числа:', filtered); // [2, 4, 6]
 
-	return new Promise((resolve) => {
-		processor.on('complete', (results) => {
-			resolve(results);
-		});
+	// приклад 2: filterAsyncWithParallelism
+	async function isEvenWithDelay(num) {
+		// додаємо затримку для імітації асинхронної операції
+		return new Promise((resolve) => setTimeout(() => resolve(num % 2 === 0), 1000));
+	}
 
-		processor.start();
-	});
-}
-
-// приклад асинхронного завдання (тепер використовує події)
-function asyncTask(item) {
-	const emitter = new EventEmitter();
-	setTimeout(() => {
-		emitter.emit('complete', `оброблено: ${item}`);
-	}, item * 1000);
-	return emitter;
-}
-
-// приклад послідовної обробки
-function sequentialExample() {
-	console.log('\n--- приклад послідовної обробки ---');
-	const input = [1, 2, 5, 0.5];
-	const timeout = 3000;
-
-	mapAsyncWithTimeoutAndParallelism(input, asyncTask, timeout, 1).then((results) => {
-		console.log('результати:', results);
-	});
-}
-
-// приклад паралельної обробки
-function parallelExample() {
-	console.log('\n--- приклад паралельної обробки ---');
-	const input = [1, 2, 5, 0.5];
-	const timeout = 3000;
-	const parallelism = 2;
-
-	mapAsyncWithTimeoutAndParallelism(input, asyncTask, timeout, parallelism).then((results) => {
-		console.log('результати:', results);
-	});
-}
-
-// виконання прикладів
-sequentialExample();
-setTimeout(parallelExample, 6000); // запускаємо другий приклад через 6 секунд
+	console.log('\n--- filterAsyncWithParallelism ---');
+	const parallelFiltered = await filterAsyncWithParallelism(array, isEvenWithDelay, 2);
+	console.log('фільтровані парні числа з filterAsyncWithParallelism:', parallelFiltered); // [2, 4, 6]
+})();
